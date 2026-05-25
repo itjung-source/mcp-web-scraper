@@ -5,28 +5,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { chromium, type Page } from "playwright";
-import { readFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-
 const BASE_URL = "https://www.set.or.th";
-
-// ---- LINE config (อ่านจาก line-config.json หรือ env vars) ----
-function getLineConfig(): { token: string | undefined; targetId: string | undefined } {
-  // 1. ลองอ่านจาก env vars ก่อน
-  if (process.env.LINE_CHANNEL_TOKEN) {
-    return { token: process.env.LINE_CHANNEL_TOKEN, targetId: process.env.LINE_TARGET_ID };
-  }
-  // 2. fallback: อ่านจาก line-config.json ข้างๆ dist/
-  try {
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    const cfgPath = join(__dirname, "..", "line-config.json");
-    const cfg = JSON.parse(readFileSync(cfgPath, "utf-8"));
-    return { token: cfg.LINE_CHANNEL_TOKEN, targetId: cfg.LINE_TARGET_ID };
-  } catch {
-    return { token: undefined, targetId: undefined };
-  }
-}
 
 const server = new Server(
   { name: "set-scraper", version: "1.0.0" },
@@ -171,26 +150,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["symbol"],
-      },
-    },
-    {
-      name: "send_line_message",
-      description:
-        "ส่งข้อความ LINE ไปยัง personal chat หรือ group ที่ตั้งค่าไว้ " +
-        "ใช้ LINE Messaging API (Push Message) ผ่าน LINE_CHANNEL_TOKEN และ LINE_TARGET_ID ใน environment",
-      inputSchema: {
-        type: "object",
-        properties: {
-          message: {
-            type: "string",
-            description: "ข้อความที่ต้องการส่ง (รองรับ newline \\n)",
-          },
-          target_id: {
-            type: "string",
-            description: "User ID หรือ Group ID ที่จะส่งถึง (optional — ถ้าไม่ระบุจะใช้ LINE_TARGET_ID จาก env)",
-          },
-        },
-        required: ["message"],
       },
     },
   ],
@@ -1406,39 +1365,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return {
       content: [{ type: "text", text: out.join("\n") }],
     };
-  }
-
-  // ---- send_line_message ----
-  if (name === "send_line_message") {
-    const { message, target_id } = args as { message: string; target_id?: string };
-
-    const lineCfg = getLineConfig();
-    const token  = lineCfg.token;
-    const target = target_id ?? lineCfg.targetId;
-
-    if (!token)  return { content: [{ type: "text", text: "❌ ไม่พบ LINE_CHANNEL_TOKEN ใน environment" }], isError: true };
-    if (!target) return { content: [{ type: "text", text: "❌ ไม่พบ LINE_TARGET_ID ใน environment (หรือระบุ target_id)" }], isError: true };
-
-    const body = JSON.stringify({
-      to: target,
-      messages: [{ type: "text", text: message }],
-    });
-
-    const res = await fetch("https://api.line.me/v2/bot/message/push", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`,
-      },
-      body,
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      return { content: [{ type: "text", text: `❌ LINE API error ${res.status}: ${err}` }], isError: true };
-    }
-
-    return { content: [{ type: "text", text: `✅ ส่งข้อความ LINE สำเร็จ!\nถึง: ${target}\n\n${message}` }] };
   }
 
   return {
