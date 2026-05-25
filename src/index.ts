@@ -174,6 +174,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "get_stock_chart",
+      description:
+        "ดึงกราฟราคาหุ้น SET/MAI จาก TradingView แบบ screenshot ภาพจริง " +
+        "แสดง candlestick chart พร้อม Volume และ Moving Average",
+      inputSchema: {
+        type: "object",
+        properties: {
+          symbol: {
+            type: "string",
+            description: "ชื่อหุ้น เช่น KBANK, PTT, ADVANC, DELTA",
+          },
+          interval: {
+            type: "string",
+            enum: ["D", "W", "M", "60", "240"],
+            description: "กรอบเวลา: D=รายวัน (default), W=รายสัปดาห์, M=รายเดือน, 60=1ชม., 240=4ชม.",
+          },
+        },
+        required: ["symbol"],
+      },
+    },
+    {
       name: "send_line_message",
       description:
         "ส่งข้อความ LINE ไปยัง personal chat หรือ group ที่ตั้งค่าไว้ " +
@@ -1406,6 +1427,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return {
       content: [{ type: "text", text: out.join("\n") }],
     };
+  }
+
+  // ---- get_stock_chart ----
+  if (name === "get_stock_chart") {
+    const { symbol, interval = "D" } = args as { symbol: string; interval?: string };
+    const sym = symbol.toUpperCase().trim();
+    const ticker = `SET%3A${sym}`;
+    const url = `https://www.tradingview.com/chart/?symbol=${ticker}&interval=${interval}&theme=dark&style=1&toolbar_bg=%23f1f3f6&withdateranges=1&hide_side_toolbar=0&allow_symbol_change=1&save_image=false`;
+
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+    const context = await browser.newContext({
+      viewport: { width: 1400, height: 800 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+      locale: "th-TH",
+    });
+    const page = await context.newPage();
+
+    try {
+      await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+      // รอกราฟ render
+      await page.waitForTimeout(6000);
+      // ปิด popup ถ้ามี
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(1000);
+
+      const screenshotBuffer = await page.screenshot({ type: "png", fullPage: false });
+      const base64 = screenshotBuffer.toString("base64");
+
+      const intervalLabel: Record<string, string> = {
+        D: "รายวัน", W: "รายสัปดาห์", M: "รายเดือน", "60": "1 ชั่วโมง", "240": "4 ชั่วโมง"
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `📊 กราฟ ${sym} (${intervalLabel[interval] ?? interval}) — TradingView`,
+          },
+          {
+            type: "image",
+            data: base64,
+            mimeType: "image/png",
+          },
+        ],
+      };
+    } finally {
+      await browser.close();
+    }
   }
 
   // ---- send_line_message ----
