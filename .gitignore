@@ -2,3 +2,6 @@ node_modules/
 dist/
 .env
 *.log
+line-config.json
+claude_mcp_config.json
+test_market_news.mjs
