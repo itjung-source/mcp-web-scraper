@@ -68,11 +68,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           fromDate: {
             type: "string",
-            description: "วันที่เริ่มต้น รูปแบบ DD/MM/YYYY เช่น 16/05/2026 — ถ้าระบุจะใช้แทน period",
+            description: "วันที่เริ่มต้น รับทั้ง DD/MM/YYYY (16/05/2026) และ YYYY-MM-DD (2026-05-16) — ถ้าระบุจะใช้แทน period",
           },
           toDate: {
             type: "string",
-            description: "วันที่สิ้นสุด รูปแบบ DD/MM/YYYY เช่น 16/05/2026 — ถ้าไม่ระบุจะใช้ค่าเดียวกับ fromDate",
+            description: "วันที่สิ้นสุด รับทั้ง DD/MM/YYYY และ YYYY-MM-DD — ถ้าไม่ระบุจะใช้ค่าเดียวกับ fromDate",
           },
           securityType: {
             type: "string",
@@ -542,11 +542,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     // ---- ไม่ระบุ symbol → ดึงข่าวตลาดทั่วไปผ่าน api/cms/v1/news/set ----
+    // API ต้องการ DD/MM/YYYY เท่านั้น ถ้าส่ง ISO (YYYY-MM-DD) จะได้ 0 รายการเงียบๆ
+    // จึงรับทั้งสองรูปแบบแล้วแปลงให้ + โยน error ถ้าแปลงไม่ได้ (ดีกว่าคืนลิสต์ว่าง)
+    const normalizeDate = (input: string, field: string): string => {
+      const s = input.trim();
+      const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+      const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (dmy) {
+        const [, d, m, y] = dmy;
+        return `${d.padStart(2, "0")}/${m.padStart(2, "0")}/${y}`;
+      }
+      throw new Error(
+        `${field} รูปแบบไม่ถูกต้อง: "${input}" — ต้องเป็น DD/MM/YYYY หรือ YYYY-MM-DD`
+      );
+    };
+
     // ถ้าระบุ fromDate ให้ใช้แทน period
     let from: string, to: string;
     if (fromDateInput) {
-      from = fromDateInput;
-      to = toDateInput ?? fromDateInput;   // ถ้าไม่ระบุ toDate ใช้วันเดียวกัน
+      from = normalizeDate(fromDateInput, "fromDate");
+      to = toDateInput ? normalizeDate(toDateInput, "toDate") : from;   // ถ้าไม่ระบุ toDate ใช้วันเดียวกัน
     } else {
       ({ from, to } = getRange(period));
     }
