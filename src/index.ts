@@ -207,18 +207,29 @@ function parseF45Data(text: string): {
 
   for (const line of text.split("\n")) {
     if (line.includes("กำไร") && line.includes("ขาดทุน")) {
-      // จับตัวเลขสองค่าท้ายบรรทัด เช่น "167,840   60,698" หรือ "(230,150)  (104,929)"
-      const m = line.match(
-        /\s+(\([\d,]+(?:\.\d+)?\)|[\d,]+(?:\.\d+)?)\s+(\([\d,]+(?:\.\d+)?\)|[\d,]+(?:\.\d+)?)\s*$/
-      );
-      if (m) {
+      const allNums = line.match(/(\([\d,]+(?:\.\d+)?\)|[\d,]+(?:\.\d+)?)/g) ?? [];
+
+      // ฟอร์ม Q2/Q3 มี 4 คอลัมน์: [ไตรมาส ปีนี้, ไตรมาส ปีก่อน, สะสม ปีนี้, สะสม ปีก่อน]
+      // ต้องใช้ "สองค่าแรก" = ตัวเลขรายไตรมาส (ไม่ใช่สองค่าท้ายซึ่งเป็นยอดสะสม)
+      // ฟอร์ม Q1/Q4 มี 2 คอลัมน์: [ปีนี้, ปีก่อน] — ใช้ได้ตรงๆ
+      let cur: string | undefined;
+      let prev: string | undefined;
+      if (allNums.length >= 4) {
+        cur = allNums[0];
+        prev = allNums[1];
+      } else if (allNums.length >= 2) {
+        cur = allNums[allNums.length - 2];
+        prev = allNums[allNums.length - 1];
+      }
+
+      if (cur && prev) {
         profitLineCount++;
         if (profitLineCount === 1) {
-          profit = parseNum(m[1]);
-          priorProfit = parseNum(m[2]);
+          profit = parseNum(cur);
+          priorProfit = parseNum(prev);
         } else if (profitLineCount === 2) {
-          eps = parseNum(m[1]);
-          priorEps = parseNum(m[2]);
+          eps = parseNum(cur);
+          priorEps = parseNum(prev);
           break;
         }
       }
