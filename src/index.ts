@@ -566,12 +566,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else {
       ({ from, to } = getRange(period));
     }
-    const perPage = Math.min(limit, 300);
+    // SET API บั๊ก: ถ้า fromDate === toDate (วันเดียว) จะคืนข้อมูลไม่ครบ (มักได้แค่ 1 รายการ)
+    // แก้โดยยิง API ด้วย toDate = to + 1 วัน แล้วกรองเฉพาะวันที่ขอเองฝั่ง client
+    const singleDay = from === to;
+    const addOneDay = (dmy: string): string => {
+      const [d, m, y] = dmy.split("/").map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      dt.setUTCDate(dt.getUTCDate() + 1);
+      return `${String(dt.getUTCDate()).padStart(2, "0")}/${String(dt.getUTCMonth() + 1).padStart(2, "0")}/${dt.getUTCFullYear()}`;
+    };
+    const apiTo = singleDay ? addOneDay(to) : to;
+    // ตอนกรองวันเดียวอาจมีข่าวของวันถัดไปปนมา จึงดึงเผื่อไว้ให้เต็มเพจ
+    const perPage = singleDay ? 300 : Math.min(limit, 300);
 
     // params สำหรับ API
     const params = new URLSearchParams({
       fromDate: from,
-      toDate: to,
+      toDate: apiTo,
       perPage: String(perPage),
       orderBy: "date",
       lang: "th",
@@ -630,6 +641,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     } finally {
       await browser.close();
+    }
+
+    // กรณีวันเดียว: กรองเอาเฉพาะข่าวที่ตรงวันที่ขอ (ตัดข่าวของวันถัดไปที่ดึงเผื่อออก)
+    if (singleDay) {
+      const bkkDate = (iso: string): string =>
+        new Date(iso).toLocaleDateString("en-GB", { timeZone: "Asia/Bangkok" }); // DD/MM/YYYY
+      items = items.filter((n) => bkkDate(n.datetime) === from);
+      totalCount = items.length;
+      items = items.slice(0, limit);
     }
 
     // format output
@@ -1117,13 +1137,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     });
 
     // ── กรอง F45 ─────────────────────────────────────────────────────────────
-    // ฟอร์ม F45 จริงมีหัวข้อ "สรุปผลการดำเนินงานของ บจ. ... (F45) ..." เสมอ
-    // ต้องมีทั้ง 2 คำ เพื่อตัดข่าวสรุปแบบบรรยายของแบงก์
-    // ("สรุปผลการดำเนินงานของธนาคารและบริษัทย่อย ..." ที่ไม่มี "(F45)" และเนื้อหาเป็น PDF ภาพ)
-    // และตัด MD&A ("คำอธิบายและวิเคราะห์...") ออกด้วย
+    // ฟอร์ม F45 มีหัวข้อขึ้นต้นด้วย "สรุปผลการดำเนินงาน...(F45)" เสมอ แต่คำต่อท้ายไม่แน่นอน:
+    //   • หุ้นทั่วไป/แบงก์  → "สรุปผลการดำเนินงานของ บจ. ..."      (มี "ของ")
+    //   • บางบริษัท         → "สรุปผลการดำเนินงานไตรมาสที่ 2/2569" (ไม่มี "ของ" เช่น SCGD)
+    // จึงเช็คแค่ "สรุปผลการดำเนินงาน" + "(F45)" — ตัว "(F45)" กรองข่าวบรรยายของแบงก์
+    // ("สรุปผลการดำเนินงานของธนาคารและบริษัทย่อย ..." ที่ไม่มี "(F45)") และ MD&A ออกได้อยู่แล้ว
     const isF45 = (n: F45NewsItem) =>
       !!n.headline &&
-      n.headline.includes("สรุปผลการดำเนินงานของ") &&
+      n.headline.includes("สรุปผลการดำเนินงาน") &&
       n.headline.includes("(F45)");
 
     // งบประจำปี — บริษัทไม่มีรายงาน Q4 แยก ใช้งบทั้งปีแทน
