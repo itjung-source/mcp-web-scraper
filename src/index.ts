@@ -1117,8 +1117,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     });
 
     // ── กรอง F45 ─────────────────────────────────────────────────────────────
+    // ฟอร์ม F45 จริงมีหัวข้อ "สรุปผลการดำเนินงานของ บจ. ... (F45) ..." เสมอ
+    // ต้องมีทั้ง 2 คำ เพื่อตัดข่าวสรุปแบบบรรยายของแบงก์
+    // ("สรุปผลการดำเนินงานของธนาคารและบริษัทย่อย ..." ที่ไม่มี "(F45)" และเนื้อหาเป็น PDF ภาพ)
+    // และตัด MD&A ("คำอธิบายและวิเคราะห์...") ออกด้วย
     const isF45 = (n: F45NewsItem) =>
-      n.headline?.includes("F45") || n.headline?.includes("สรุปผลการดำเนินงาน");
+      !!n.headline &&
+      n.headline.includes("สรุปผลการดำเนินงานของ") &&
+      n.headline.includes("(F45)");
 
     // งบประจำปี — บริษัทไม่มีรายงาน Q4 แยก ใช้งบทั้งปีแทน
     const isAnnual = (n: F45NewsItem) =>
@@ -1150,14 +1156,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const yearCE = yearBE > 2500 ? yearBE - 543 : yearBE;
       f45List = f45List.filter(n => new Date(n.datetime).getFullYear() === yearCE);
     }
-
-    // เลือกฟอร์ม F45 จริงก่อน — บางหุ้น (โดยเฉพาะแบงก์) ยื่นข่าวสรุปผลหลายฉบับ
-    // เวลาเดียวกัน ("สรุปผลการดำเนินงานของธนาคาร..." vs "...(F45)") ต้องหยิบตัวที่มี "(F45)"
-    // เพราะตัวนั้นมีตารางตัวเลขมาตรฐาน ส่วนอีกตัวเป็นสรุปเชิงบรรยาย
-    f45List = f45List.sort((a, b) => {
-      const score = (h: string) => (h.includes("(F45)") ? 2 : h.includes("F45") ? 1 : 0);
-      return score(b.headline ?? "") - score(a.headline ?? "");
-    });
 
     if (f45List.length === 0) {
       return {
