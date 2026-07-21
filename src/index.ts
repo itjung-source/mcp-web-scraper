@@ -1151,6 +1151,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       f45List = f45List.filter(n => new Date(n.datetime).getFullYear() === yearCE);
     }
 
+    // เลือกฟอร์ม F45 จริงก่อน — บางหุ้น (โดยเฉพาะแบงก์) ยื่นข่าวสรุปผลหลายฉบับ
+    // เวลาเดียวกัน ("สรุปผลการดำเนินงานของธนาคาร..." vs "...(F45)") ต้องหยิบตัวที่มี "(F45)"
+    // เพราะตัวนั้นมีตารางตัวเลขมาตรฐาน ส่วนอีกตัวเป็นสรุปเชิงบรรยาย
+    f45List = f45List.sort((a, b) => {
+      const score = (h: string) => (h.includes("(F45)") ? 2 : h.includes("F45") ? 1 : 0);
+      return score(b.headline ?? "") - score(a.headline ?? "");
+    });
+
     if (f45List.length === 0) {
       return {
         content: [{
