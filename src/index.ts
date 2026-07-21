@@ -1124,6 +1124,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const isAnnual = (n: F45NewsItem) =>
       isF45(n) && (n.headline?.includes("ประจำปี") || n.headline?.includes("ประจำงวด"));
 
+    // แบงก์/สถาบันการเงินยื่น F45 ต่างจากหุ้นทั่วไป:
+    //   Q2 → "งวดครึ่งปีสำหรับกลุ่มสถาบันการเงิน" (ไม่มีคำว่า "ไตรมาสที่ 2")
+    //   Q3 → "งวดเก้าเดือน" / "งวด 9 เดือน"
+    // ฟอร์มมี 4 คอลัมน์ [ไตรมาส ปีนี้, ไตรมาส ปีก่อน, สะสม ปีนี้, สะสม ปีก่อน]
+    // parseF45Data หยิบ 2 คอลัมน์แรก = ตัวเลขรายไตรมาส จึงเทียบ QoQ/YoY ได้ตรง
+    const matchesQuarter = (h: string, q: number): boolean => {
+      if (h.includes(`ไตรมาสที่ ${q}`)) return true;
+      if (q === 2) return /งวดครึ่งปี|ครึ่งปี|งวด\s*6\s*เดือน|หกเดือน/.test(h);
+      if (q === 3) return /งวด\s*9\s*เดือน|เก้าเดือน/.test(h);
+      return false;
+    };
+
     let f45List: F45NewsItem[];
     if (quarter === 4) {
       // Q4: ค้นหางบประจำปี ไม่ใช่ "ไตรมาสที่ 4"
@@ -1131,7 +1143,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else {
       f45List = newsList.filter(isF45);
       if (quarter) {
-        f45List = f45List.filter(n => n.headline?.includes(`ไตรมาสที่ ${quarter}`));
+        f45List = f45List.filter(n => matchesQuarter(n.headline ?? "", quarter));
       }
     }
     if (yearBE) {
@@ -1160,8 +1172,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ── หาไตรมาสปัจจุบันจาก headline ─────────────────────────────────────────
     const qMatch = news.headline.match(/ไตรมาสที่\s*(\d)/);
     // Q4 = annual report (ไม่มี "ไตรมาสที่ 4" ใน headline) → กำหนด curQ=4 เอง
+    // ฟอร์มแบงก์ (งวดครึ่งปี/9เดือน) ไม่มี "ไตรมาสที่ X" ใน headline → ใช้ quarter ที่ผู้เรียกระบุ
     const isAnnualReport = quarter === 4 || news.headline.includes("ประจำปี");
-    const curQ = isAnnualReport ? 4 : (qMatch ? parseInt(qMatch[1]) : 0);
+    const curQ = isAnnualReport ? 4 : (qMatch ? parseInt(qMatch[1]) : (quarter ?? 0));
     const newsYearCE = new Date(news.datetime).getFullYear();
     const newsYearBE = newsYearCE + 543;
 
