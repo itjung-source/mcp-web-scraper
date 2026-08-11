@@ -619,6 +619,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     let items: NewsItem[] = [];
     let totalCount = 0;
+    let pagesFetched = 0;
+    let hitSafetyCap = false;
+    const MAX_PAGES = 6; // 6 หน้า x perPage 300 = 1,800 รายการ กันวนไม่รู้จบถ้า API เพี้ยน
+
+    const fetchPage = async (pageNum: number): Promise<{ totalCount: number; list: NewsItem[] }> => {
+      const pageParams = new URLSearchParams(params);
+      pageParams.set("page", String(pageNum));
+      const res = await context.request.get(`${BASE_URL}/api/cms/v1/news/set?${pageParams}`, { headers: apiHeaders });
+      if (res.status() !== 200) return { totalCount: 0, list: [] };
+      const json = await res.json() as {
+        paginateNews?: { totalCount: number; newsInfoList: NewsItem[] };
+        newsGroups?: Array<{ totalCount: number; newsInfoList: NewsItem[] }>;
+      };
+      const pg = json?.paginateNews ?? json?.newsGroups?.[0];
+      return { totalCount: pg?.totalCount ?? 0, list: pg?.newsInfoList ?? [] };
+    };
 
     try {
       // โหลดหน้าก่อนเพื่อรับ session + uuid
@@ -627,17 +643,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
       await page.waitForTimeout(3000);
 
-      // เรียก API โดยตรงด้วย headers ที่ capture ได้
-      const res = await context.request.get(apiUrl, { headers: apiHeaders });
+      const first = await fetchPage(1);
+      totalCount = first.totalCount;
+      items = first.list;
+      pagesFetched = 1;
 
-      if (res.status() === 200) {
-        const json = await res.json() as {
-          paginateNews?: { totalCount: number; newsInfoList: NewsItem[] };
-          newsGroups?: Array<{ totalCount: number; newsInfoList: NewsItem[] }>;
-        };
-        const pg = json?.paginateNews ?? json?.newsGroups?.[0];
-        totalCount = pg?.totalCount ?? 0;
-        items = pg?.newsInfoList ?? [];
+      if (singleDay) {
+        // บั๊กเดิม: ยิงครั้งเดียว perPage=300 พอ (วันนี้+พรุ่งนี้บางส่วน) รวมกันเกิน 300 รายการ
+        // (พบบ่อยช่วงงบออก) จะได้แค่ 300 รายการล่าสุด ตัดข่าวเก่าของ "วันนี้" ทิ้งไปเงียบๆ
+        // แก้โดย paginate ต่อจนกว่าจะเจอข่าวที่เก่ากว่าวันที่ขอ (from) หรือครบ totalCount
+        const bkkDate = (iso: string): string =>
+          new Date(iso).toLocaleDateString("en-GB", { timeZone: "Asia/Bangkok" });
+        while (
+          items.length < totalCount &&
+          pagesFetched < MAX_PAGES &&
+          !items.some((n) => {
+            const d = bkkDate(n.datetime);
+            // เจอข่าวที่เก่ากว่าวันที่ขอแล้ว = paginate ผ่านวันเป้าหมายมาหมดแล้ว หยุดได้
+            const [dd, mm, yyyy] = from.split("/").map(Number);
+            const [nd, nm, ny] = d.split("/").map(Number);
+            return ny < yyyy || (ny === yyyy && nm < mm) || (ny === yyyy && nm === mm && nd < dd);
+          })
+        ) {
+          pagesFetched++;
+          const next = await fetchPage(pagesFetched);
+          if (next.list.length === 0) break; // ไม่มีข้อมูลเพิ่มแล้ว
+          items = items.concat(next.list);
+        }
+        if (pagesFetched >= MAX_PAGES && items.length < totalCount) hitSafetyCap = true;
       }
     } finally {
       await browser.close();
@@ -661,7 +694,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
 
     const header = `=== ข่าวตลาดหลักทรัพย์ SET [${periodLabel[period] ?? period}] [${secLabel[securityType] ?? securityType}] ===`;
-    const subHeader = `พบ ${totalCount.toLocaleString()} รายการ  |  แสดง ${items.length} รายการ  (${from} – ${to})\n`;
+    const capWarning = hitSafetyCap
+      ? `\n⚠️ ข่าววันนี้เยอะมาก ดึงครบ ${MAX_PAGES} หน้าแล้วยังไม่ครบ อาจมีข่าวช่วงเช้าตกหล่น — ลองแบ่งดึงเป็นช่วงเวลาย่อยแทน`
+      : "";
+    const subHeader = `พบ ${totalCount.toLocaleString()} รายการ  |  แสดง ${items.length} รายการ  (${from} – ${to})${capWarning}\n`;
 
     const newsLines = items.map((n, i) => {
       const dt = new Date(n.datetime).toLocaleString("th-TH", {
