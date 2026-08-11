@@ -490,17 +490,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       product?: string;
     }
 
-    // ---- helper: format date DD/MM/YYYY ----
+    // ---- helper: format date DD/MM/YYYY (ใช้ UTC getters เท่านั้น กัน timezone เครื่อง server เพี้ยน) ----
     const fmtDate = (d: Date): string =>
-      `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+      `${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`;
+
+    // "วันนี้" ต้องอิงเวลาไทย (Asia/Bangkok) เสมอ ห้ามใช้ `new Date()` + local getters ตรงๆ
+    // เพราะถ้าเครื่องที่รัน MCP server ตั้ง timezone ไม่ใช่ไทย (เช่น US) วันที่ปฏิทินจะเพี้ยนไปหนึ่งวัน
+    // ได้หลายชั่วโมงต่อวัน (เคยพบ: เที่ยงวันเมืองไทยแล้วเครื่อง server ยังนับเป็น "เมื่อวาน" อยู่)
+    const bkkToday = (): Date => {
+      const [y, m, d] = new Date()
+        .toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" }) // YYYY-MM-DD
+        .split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d));
+    };
 
     const getRange = (p: string): { from: string; to: string } => {
-      const today = new Date();
+      const today = bkkToday();
       const to = fmtDate(today);
       switch (p) {
-        case "5D": { const d = new Date(today); d.setDate(d.getDate() - 5); return { from: fmtDate(d), to }; }
-        case "1M": { const d = new Date(today); d.setMonth(d.getMonth() - 1); return { from: fmtDate(d), to }; }
-        case "3M": { const d = new Date(today); d.setMonth(d.getMonth() - 3); return { from: fmtDate(d), to }; }
+        case "5D": { const d = new Date(today); d.setUTCDate(d.getUTCDate() - 5); return { from: fmtDate(d), to }; }
+        case "1M": { const d = new Date(today); d.setUTCMonth(d.getUTCMonth() - 1); return { from: fmtDate(d), to }; }
+        case "3M": { const d = new Date(today); d.setUTCMonth(d.getUTCMonth() - 3); return { from: fmtDate(d), to }; }
         default:   return { from: to, to };
       }
     };
@@ -567,21 +577,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ({ from, to } = getRange(period));
     }
     // SET API บั๊ก: ถ้า fromDate === toDate (วันเดียว) จะคืนข้อมูลไม่ครบ (มักได้แค่ 1 รายการ)
-    // แก้โดยยิง API ด้วย toDate = to + 1 วัน แล้วกรองเฉพาะวันที่ขอเองฝั่ง client
+    // แก้โดยขยายช่วงให้ fromDate ≠ toDate แล้วกรองเฉพาะวันที่ขอเองฝั่ง client
     const singleDay = from === to;
-    const addOneDay = (dmy: string): string => {
+    const shiftDay = (dmy: string, delta: number): string => {
       const [d, m, y] = dmy.split("/").map(Number);
       const dt = new Date(Date.UTC(y, m - 1, d));
-      dt.setUTCDate(dt.getUTCDate() + 1);
+      dt.setUTCDate(dt.getUTCDate() + delta);
       return `${String(dt.getUTCDate()).padStart(2, "0")}/${String(dt.getUTCMonth() + 1).padStart(2, "0")}/${dt.getUTCFullYear()}`;
     };
-    const apiTo = singleDay ? addOneDay(to) : to;
-    // ตอนกรองวันเดียวอาจมีข่าวของวันถัดไปปนมา จึงดึงเผื่อไว้ให้เต็มเพจ
+    // ปกติขยายไปข้างหน้า (toDate = to+1) แต่ถ้าวันที่ขอคือ "วันนี้" (ตามเวลาไทย) การขยายไปข้างหน้า
+    // จะทำให้ toDate กลายเป็นวันพรุ่งนี้จริง ๆ (future date) ซึ่ง SET API จะคืน 0 รายการเงียบๆ
+    // (ต่างจากอดีต ที่ toDate ที่ขยายแล้วยังเป็นวันในอดีตหรือวันนี้เสมอ จึงไม่มีปัญหา)
+    // กรณีนี้จึงขยายถอยหลังแทน (fromDate = from-1) ให้ toDate ยังคงเป็น "วันนี้จริง" ไม่ใช่อนาคต
+    const isTargetToday = singleDay && to === fmtDate(bkkToday());
+    const apiFrom = isTargetToday ? shiftDay(from, -1) : from;
+    const apiTo = singleDay ? (isTargetToday ? to : shiftDay(to, 1)) : to;
+    // ตอนกรองวันเดียวอาจมีข่าวของวันข้างเคียงปนมา จึงดึงเผื่อไว้ให้เต็มเพจ
     const perPage = singleDay ? 300 : Math.min(limit, 300);
 
     // params สำหรับ API
     const params = new URLSearchParams({
-      fromDate: from,
+      fromDate: apiFrom,
       toDate: apiTo,
       perPage: String(perPage),
       orderBy: "date",
