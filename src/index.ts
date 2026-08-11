@@ -623,9 +623,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let hitSafetyCap = false;
     const MAX_PAGES = 6; // 6 หน้า x perPage 300 = 1,800 รายการ กันวนไม่รู้จบถ้า API เพี้ยน
 
+    // ⚠️ หน้าแรก (pageNum=1) ต้อง "ไม่ใส่" param page เลย — พิสูจน์แล้วว่าถ้าใส่ page=1
+    // ไปด้วย API จะพังคืน 0 รายการเงียบๆ โดยเฉพาะตอน toDate เป็นวันอนาคต (เช่น
+    // ดึงข่าว "วันนี้" ที่ workaround ขยาย toDate ไปเป็นพรุ่งนี้) หน้า 2 เป็นต้นไปค่อยใส่ page
     const fetchPage = async (pageNum: number): Promise<{ totalCount: number; list: NewsItem[] }> => {
       const pageParams = new URLSearchParams(params);
-      pageParams.set("page", String(pageNum));
+      if (pageNum > 1) pageParams.set("page", String(pageNum));
       const res = await context.request.get(`${BASE_URL}/api/cms/v1/news/set?${pageParams}`, { headers: apiHeaders });
       if (res.status() !== 200) return { totalCount: 0, list: [] };
       const json = await res.json() as {
