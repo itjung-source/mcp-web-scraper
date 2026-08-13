@@ -81,7 +81,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           limit: {
             type: "number",
-            description: "จำนวนข่าวสูงสุดที่ต้องการ (default: 20, max: 300)",
+            description: "จำนวนข่าวสูงสุดที่ต้องการ (default: 20) — ไม่มีเพดาน 300 แล้ว วันที่ข่าวเยอะ (วันครบกำหนดส่งงบ) มีได้ถึง ~700 รายการ/วัน ใส่ 1000 ไปเลยถ้าต้องการครบ",
           },
         },
         required: [],
@@ -592,8 +592,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const isTargetToday = singleDay && to === fmtDate(bkkToday());
     const apiFrom = isTargetToday ? shiftDay(from, -1) : from;
     const apiTo = singleDay ? (isTargetToday ? to : shiftDay(to, 1)) : to;
-    // ตอนกรองวันเดียวอาจมีข่าวของวันข้างเคียงปนมา จึงดึงเผื่อไว้ให้เต็มเพจ
-    const perPage = singleDay ? 300 : Math.min(limit, 300);
+    // perPage: SET API **ไม่ได้** cap ที่ 300 (ทดสอบแล้ว perPage=2000/5000 คืนครบทุกรายการ
+    // ในการยิงครั้งเดียว เช่น ช่วง 5 วัน = 1,600 รายการ) ค่า 300 เดิมเป็นเพดานที่เราตั้งเองล้วน ๆ
+    // วันเดียว: ต้องได้ข่าว "ทั้งวัน" มาก่อนแล้วค่อยกรอง จึงขอเผื่อสูงไว้ ไม่อิง limit
+    // หลายวัน: อิง limit ตามที่ผู้ใช้ขอ
+    const HARD_CAP = 5000;      // กันขอ payload ใหญ่เกินเหตุ
+    const perPage = singleDay ? 1000 : Math.min(Math.max(limit, 100), HARD_CAP);
 
     // params สำหรับ API
     const params = new URLSearchParams({
@@ -635,16 +639,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     let items: NewsItem[] = [];
     let totalCount = 0;
-    let pagesFetched = 0;
     let hitSafetyCap = false;
-    const MAX_PAGES = 6; // 6 หน้า x perPage 300 = 1,800 รายการ กันวนไม่รู้จบถ้า API เพี้ยน
 
-    // ⚠️ หน้าแรก (pageNum=1) ต้อง "ไม่ใส่" param page เลย — พิสูจน์แล้วว่าถ้าใส่ page=1
-    // ไปด้วย API จะพังคืน 0 รายการเงียบๆ โดยเฉพาะตอน toDate เป็นวันอนาคต (เช่น
-    // ดึงข่าว "วันนี้" ที่ workaround ขยาย toDate ไปเป็นพรุ่งนี้) หน้า 2 เป็นต้นไปค่อยใส่ page
-    const fetchPage = async (pageNum: number): Promise<{ totalCount: number; list: NewsItem[] }> => {
+    // ⚠️ ห้ามใช้ param `page` เด็ดขาด — SET API นับ page แบบ **0-indexed**
+    // (page=0 → รายการที่ 1-300, page=1 → 301-600, page=2 → 601-900)
+    // โค้ดเดิมข้ามหน้าแรกแล้วยิง page=2 เป็น "หน้าที่สอง" ซึ่งจริง ๆ คือหน้าที่ **สาม**
+    // ทำให้รายการที่ 301-600 (ข่าวช่วงเช้า-บ่าย) หายไปเงียบ ๆ แล้ว loop ก็จบเพราะหน้าถัดไปว่าง
+    // ทางแก้: ไม่ paginate เลย ใช้ perPage ใหญ่ยิงรอบเดียว (API รองรับเต็มที่)
+    const fetchAll = async (pp: number): Promise<{ totalCount: number; list: NewsItem[] }> => {
       const pageParams = new URLSearchParams(params);
-      if (pageNum > 1) pageParams.set("page", String(pageNum));
+      pageParams.set("perPage", String(pp));
       const res = await context.request.get(`${BASE_URL}/api/cms/v1/news/set?${pageParams}`, { headers: apiHeaders });
       if (res.status() !== 200) return { totalCount: 0, list: [] };
       const json = await res.json() as {
@@ -662,34 +666,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
       await page.waitForTimeout(3000);
 
-      const first = await fetchPage(1);
+      const first = await fetchAll(perPage);
       totalCount = first.totalCount;
       items = first.list;
-      pagesFetched = 1;
 
-      if (singleDay) {
-        // บั๊กเดิม: ยิงครั้งเดียว perPage=300 พอ (วันนี้+พรุ่งนี้บางส่วน) รวมกันเกิน 300 รายการ
-        // (พบบ่อยช่วงงบออก) จะได้แค่ 300 รายการล่าสุด ตัดข่าวเก่าของ "วันนี้" ทิ้งไปเงียบๆ
-        // แก้โดย paginate ต่อจนกว่าจะเจอข่าวที่เก่ากว่าวันที่ขอ (from) หรือครบ totalCount
-        const bkkDate = (iso: string): string =>
-          new Date(iso).toLocaleDateString("en-GB", { timeZone: "Asia/Bangkok" });
-        while (
-          items.length < totalCount &&
-          pagesFetched < MAX_PAGES &&
-          !items.some((n) => {
-            const d = bkkDate(n.datetime);
-            // เจอข่าวที่เก่ากว่าวันที่ขอแล้ว = paginate ผ่านวันเป้าหมายมาหมดแล้ว หยุดได้
-            const [dd, mm, yyyy] = from.split("/").map(Number);
-            const [nd, nm, ny] = d.split("/").map(Number);
-            return ny < yyyy || (ny === yyyy && nm < mm) || (ny === yyyy && nm === mm && nd < dd);
-          })
-        ) {
-          pagesFetched++;
-          const next = await fetchPage(pagesFetched);
-          if (next.list.length === 0) break; // ไม่มีข้อมูลเพิ่มแล้ว
-          items = items.concat(next.list);
+      // ถ้าของจริงมีมากกว่าที่ขอไปรอบแรก ให้ยิงซ้ำรอบเดียวด้วย perPage = totalCount
+      // (เฉพาะวันเดียว ที่ต้องได้ครบทั้งวันก่อนกรอง — หลายวันให้เคารพ limit ตามที่ผู้ใช้ขอ)
+      if (singleDay && items.length < totalCount) {
+        if (totalCount > HARD_CAP) {
+          hitSafetyCap = true;
+        } else {
+          const full = await fetchAll(totalCount);
+          if (full.list.length > items.length) {
+            items = full.list;
+            totalCount = full.totalCount;
+          }
         }
-        if (pagesFetched >= MAX_PAGES && items.length < totalCount) hitSafetyCap = true;
       }
     } finally {
       await browser.close();
@@ -713,9 +705,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
 
     const header = `=== ข่าวตลาดหลักทรัพย์ SET [${periodLabel[period] ?? period}] [${secLabel[securityType] ?? securityType}] ===`;
+    const truncated = items.length < totalCount;
     const capWarning = hitSafetyCap
-      ? `\n⚠️ ข่าววันนี้เยอะมาก ดึงครบ ${MAX_PAGES} หน้าแล้วยังไม่ครบ อาจมีข่าวช่วงเช้าตกหล่น — ลองแบ่งดึงเป็นช่วงเวลาย่อยแทน`
-      : "";
+      ? `\n⚠️ ข่าววันนี้เกิน ${HARD_CAP.toLocaleString()} รายการ ดึงได้ไม่ครบ — ลองแบ่งดึงเป็นช่วงเวลาย่อยแทน`
+      : truncated
+        ? `\n⚠️ แสดงไม่ครบ (มี ${totalCount.toLocaleString()} รายการ แต่ limit = ${limit}) — เพิ่ม limit เป็น ${totalCount} เพื่อดูทั้งหมด`
+        : "";
     const subHeader = `พบ ${totalCount.toLocaleString()} รายการ  |  แสดง ${items.length} รายการ  (${from} – ${to})${capWarning}\n`;
 
     const newsLines = items.map((n, i) => {
