@@ -7,6 +7,12 @@ import {
 import { chromium, type Page } from "playwright";
 const BASE_URL = "https://www.set.or.th";
 
+// ⚠️ ชื่อหุ้นบางตัวมี `&` (S&J, L&E, F&D, MC&C) ถ้ายัดดิบ ๆ ลง URL
+// `&` จะกลายเป็นตัวคั่น query แล้ว param ขาด — ที่ผ่านมาทำให้หุ้นกลุ่มนี้
+// ดึงข้อมูลไม่ได้เลย (ขึ้น "ไม่พบข่าว F45") ต้อง encode ก่อนเสมอ
+// ทั้ง path segment และ query value
+const encSym = (s: string): string => encodeURIComponent(s);
+
 const server = new Server(
   { name: "set-scraper", version: "1.0.0" },
   { capabilities: { tools: {} } }
@@ -366,7 +372,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const sym = symbol.toUpperCase().trim();
 
     const data = await withPage(async (page) => {
-      await page.goto(`${BASE_URL}/th/market/product/stock/quote/${sym}/price`, {
+      await page.goto(`${BASE_URL}/th/market/product/stock/quote/${encSym(sym)}/price`, {
         waitUntil: "networkidle",
         timeout: 30000,
       });
@@ -527,7 +533,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             } catch { /* ignore */ }
           }
         });
-        await page.goto(`${BASE_URL}/th/market/product/stock/quote/${sym}/news`, {
+        await page.goto(`${BASE_URL}/th/market/product/stock/quote/${encSym(sym)}/news`, {
           waitUntil: "networkidle", timeout: 30000,
         });
         await page.waitForTimeout(4000);
@@ -840,7 +846,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     try {
       await page.goto(
-        `${BASE_URL}/th/market/product/stock/quote/${sym}/financial-statement/company-highlights`,
+        `${BASE_URL}/th/market/product/stock/quote/${encSym(sym)}/financial-statement/company-highlights`,
         { waitUntil: "networkidle", timeout: 30000 }
       );
       await page.waitForTimeout(4000);
@@ -946,7 +952,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const fallbackPage = await fallbackCtx.newPage();
     try {
       await fallbackPage.goto(
-        `${BASE_URL}/th/market/product/stock/quote/${sym}/financial-statement/company-highlights`,
+        `${BASE_URL}/th/market/product/stock/quote/${encSym(sym)}/financial-statement/company-highlights`,
         { waitUntil: "networkidle", timeout: 30000 }
       );
       await fallbackPage.waitForTimeout(5000);
@@ -1016,10 +1022,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     page.on("response", async (res) => {
       const u = res.url();
       try {
-        if (u.includes(`/stock/${sym}/shareholder`)) {
+        // หุ้นที่ชื่อมี `&` จะถูก encode ใน URL จริง (S&J → S%26J) จึงต้องเทียบทั้งสองแบบ
+        const hit = (path: string): boolean =>
+          u.includes(`/stock/${sym}/${path}`) || u.includes(`/stock/${encSym(sym)}/${path}`);
+        if (hit("shareholder")) {
           shareholderData = await res.json() as ShareholderApiResponse;
         }
-        if (u.includes(`/stock/${sym}/nvdr-holder`)) {
+        if (hit("nvdr-holder")) {
           nvdrData = await res.json() as ShareholderApiResponse;
         }
       } catch { /* ignore */ }
@@ -1027,7 +1036,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     try {
       await page.goto(
-        `${BASE_URL}/th/market/product/stock/quote/${sym}/major-shareholders`,
+        `${BASE_URL}/th/market/product/stock/quote/${encSym(sym)}/major-shareholders`,
         { waitUntil: "networkidle", timeout: 30000 }
       );
       await page.waitForTimeout(4000);
@@ -1171,7 +1180,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const newsPageUrl =
         `${BASE_URL}/th/market/news-and-alert/news` +
-        `?source=company&symbol=${sym.toLowerCase()}&securityType=S` +
+        `?source=company&symbol=${encSym(sym.toLowerCase())}&securityType=S` +
         `&fromDate=${dateFrom.toISOString().split("T")[0]}&toDate=${dateTo.toISOString().split("T")[0]}`;
 
       await page.goto(newsPageUrl, { waitUntil: "networkidle", timeout: 30000 });
