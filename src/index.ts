@@ -332,15 +332,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // 1. Market Overview
   if (name === "get_market_overview") {
     const data = await withPage(async (page) => {
+      // ไม่รอ networkidle — หน้า SET มี request วิ่งตลอดจึงไม่เคยนิ่งจริง (06/11/2026
+      // รอบ market-daily-summary timeout ตรงนี้) รอแค่โครงหน้าโหลด แล้วไปรอข้อมูลจริง
+      // ด้วย waitForFunction ด้านล่างแทน ซึ่งเป็นเงื่อนไขที่บอกว่าข้อมูลมาแล้วจริง ๆ
       await page.goto(`${BASE_URL}/th/market/product/stock/overview`, {
-        waitUntil: "networkidle",
-        timeout: 30000,
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
       });
 
       // รอดัชนีโหลด
       await page.waitForFunction(
         () => document.body.innerText.includes("มูลค่า"),
-        { timeout: 15000 }
+        { timeout: 45000 }
       );
 
       // ดึงส่วน top10 (มีข้อมูลหุ้น) + header
